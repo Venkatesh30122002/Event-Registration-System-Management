@@ -1,0 +1,567 @@
+# Event Registration System — Line-by-line (Minimal, runnable example)
+
+This document contains a compact, line-by-line Java + JSP + MySQL example you can run as a Maven webapp. Files are shown with their paths and code blocks. Follow the README instructions at the end to build and deploy.
+
+---
+
+## File: pom.xml
+xml
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>event-registration</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>war</packaging>
+
+    <dependencies>
+        <!-- Servlet API (provided by container) -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <version>5.0.0</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- JSTL for JSP pages -->
+        <dependency>
+            <groupId>jakarta.servlet.jsp.jstl</groupId>
+            <artifactId>jakarta.servlet.jsp.jstl-api</artifactId>
+            <version>2.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.glassfish.web</groupId>
+            <artifactId>jakarta.servlet.jsp.jstl</artifactId>
+            <version>2.0.0</version>
+        </dependency>
+
+        <!-- MySQL connector -->
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>8.1.0</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-war-plugin</artifactId>
+                <version>3.3.2</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+
+
+---
+
+## File: src/main/resources/db.properties
+properties
+# MySQL DB properties
+db.url=jdbc:mysql://localhost:3306/eventdb?useSSL=false&serverTimezone=UTC
+db.user=root
+db.password=your_db_password
+
+
+---
+
+## File: sql/schema.sql
+sql
+-- Create database and tables
+CREATE DATABASE IF NOT EXISTS eventdb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE eventdb;
+
+CREATE TABLE IF NOT EXISTS events (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(200) NOT NULL,
+  description TEXT,
+  venue VARCHAR(200),
+  event_date DATE,
+  capacity INT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS participants (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(200) NOT NULL,
+  email VARCHAR(200) NOT NULL UNIQUE,
+  phone VARCHAR(50)
+);
+
+CREATE TABLE IF NOT EXISTS registrations (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  event_id INT NOT NULL,
+  participant_id INT NOT NULL,
+  registration_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+  FOREIGN KEY (participant_id) REFERENCES participants(id) ON DELETE CASCADE,
+  UNIQUE KEY unique_event_participant (event_id, participant_id)
+);
+
+-- Example seed data
+INSERT INTO events (name, description, venue, event_date, capacity) VALUES
+('Intro to Java', 'Beginner Java workshop', 'Room A', '2025-09-15', 30),
+('Web Dev Bootcamp', 'Full day web technologies', 'Hall 2', '2025-09-20', 50);
+
+
+---
+
+## File: src/main/java/com/example/utils/DBUtil.java
+java
+package com.example.utils;
+
+import java.io.InputStream;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.util.Properties;
+
+public class DBUtil {
+    private static String url;
+    private static String user;
+    private static String password;
+
+    static {
+        try (InputStream is = DBUtil.class.getClassLoader().getResourceAsStream("db.properties")) {
+            Properties p = new Properties();
+            p.load(is);
+            url = p.getProperty("db.url");
+            user = p.getProperty("db.user");
+            password = p.getProperty("db.password");
+            Class.forName("com.mysql.cj.jdbc.Driver");
+        } catch (Exception e) {
+            throw new RuntimeException("Unable to load DB properties", e);
+        }
+    }
+
+    public static Connection getConnection() throws Exception {
+        return DriverManager.getConnection(url, user, password);
+    }
+}
+
+
+---
+
+## File: src/main/java/com/example/model/Event.java
+java
+package com.example.model;
+
+import java.sql.Date;
+
+public class Event {
+    private int id;
+    private String name;
+    private String description;
+    private String venue;
+    private Date eventDate;
+    private int capacity;
+
+    // getters and setters
+    public int getId() { return id; }
+    public void setId(int id) { this.id = id; }
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    public String getDescription() { return description; }
+    public void setDescription(String description) { this.description = description; }
+    public String getVenue() { return venue; }
+    public void setVenue(String venue) { this.venue = venue; }
+    public Date getEventDate() { return eventDate; }
+    public void setEventDate(Date eventDate) { this.eventDate = eventDate; }
+    public int getCapacity() { return capacity; }
+    public void setCapacity(int capacity) { this.capacity = capacity; }
+}
+
+
+---
+
+## File: src/main/java/com/example/dao/EventDAO.java
+java
+package com.example.dao;
+
+import com.example.model.Event;
+import com.example.utils.DBUtil;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.util.ArrayList;
+import java.util.List;
+
+public class EventDAO {
+
+    public List<Event> listAll() throws Exception {
+        String sql = "SELECT id, name, description, venue, event_date, capacity FROM events ORDER BY event_date";
+        try (Connection c = DBUtil.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            List<Event> list = new ArrayList<>();
+            while (rs.next()) {
+                Event e = new Event();
+                e.setId(rs.getInt("id"));
+                e.setName(rs.getString("name"));
+                e.setDescription(rs.getString("description"));
+                e.setVenue(rs.getString("venue"));
+                e.setEventDate(rs.getDate("event_date"));
+                e.setCapacity(rs.getInt("capacity"));
+                list.add(e);
+            }
+            return list;
+        }
+    }
+
+    public Event findById(int id) throws Exception {
+        String sql = "SELECT id, name, description, venue, event_date, capacity FROM events WHERE id = ?";
+        try (Connection c = DBUtil.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    Event e = new Event();
+                    e.setId(rs.getInt("id"));
+                    e.setName(rs.getString("name"));
+                    e.setDescription(rs.getString("description"));
+                    e.setVenue(rs.getString("venue"));
+                    e.setEventDate(rs.getDate("event_date"));
+                    e.setCapacity(rs.getInt("capacity"));
+                    return e;
+                }
+                return null;
+            }
+        }
+    }
+}
+
+
+---
+
+## File: src/main/java/com/example/dao/RegistrationDAO.java
+java
+package com.example.dao;
+
+import com.example.utils.DBUtil;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+
+public class RegistrationDAO {
+
+    // Register a participant to an event; returns:
+    // "OK" if registered, "DUPLICATE" if already registered, "FULL" if event full
+    public String register(int eventId, String name, String email, String phone) throws Exception {
+        try (Connection c = DBUtil.getConnection()) {
+            c.setAutoCommit(false);
+            try {
+                // 1) Find or insert participant
+                Integer participantId = findParticipantByEmail(c, email);
+                if (participantId == null) {
+                    participantId = insertParticipant(c, name, email, phone);
+                }
+
+                // 2) Check duplicate registration
+                if (isAlreadyRegistered(c, eventId, participantId)) {
+                    c.rollback();
+                    return "DUPLICATE";
+                }
+
+                // 3) Check capacity
+                int currentCount = countRegistrationsForEvent(c, eventId);
+                int capacity = getCapacityForEvent(c, eventId);
+                if (capacity > 0 && currentCount >= capacity) {
+                    c.rollback();
+                    return "FULL";
+                }
+
+                // 4) Insert registration
+                String ins = "INSERT INTO registrations (event_id, participant_id) VALUES (?, ?)";
+                try (PreparedStatement ps = c.prepareStatement(ins)) {
+                    ps.setInt(1, eventId);
+                    ps.setInt(2, participantId);
+                    ps.executeUpdate();
+                }
+
+                c.commit();
+                return "OK";
+            } catch (Exception ex) {
+                c.rollback();
+                throw ex;
+            } finally {
+                c.setAutoCommit(true);
+            }
+        }
+    }
+
+    private Integer findParticipantByEmail(Connection c, String email) throws Exception {
+        String q = "SELECT id FROM participants WHERE email = ?";
+        try (PreparedStatement ps = c.prepareStatement(q)) {
+            ps.setString(1, email);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getInt("id");
+                return null;
+            }
+        }
+    }
+
+    private int insertParticipant(Connection c, String name, String email, String phone) throws Exception {
+        String ins = "INSERT INTO participants (name, email, phone) VALUES (?, ?, ?)";
+        try (PreparedStatement ps = c.prepareStatement(ins, PreparedStatement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, name);
+            ps.setString(2, email);
+            ps.setString(3, phone);
+            ps.executeUpdate();
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                rs.next();
+                return rs.getInt(1);
+            }
+        }
+    }
+
+    private boolean isAlreadyRegistered(Connection c, int eventId, int participantId) throws Exception {
+        String q = "SELECT id FROM registrations WHERE event_id = ? AND participant_id = ?";
+        try (PreparedStatement ps = c.prepareStatement(q)) {
+            ps.setInt(1, eventId);
+            ps.setInt(2, participantId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    private int countRegistrationsForEvent(Connection c, int eventId) throws Exception {
+        String q = "SELECT COUNT(*) AS cnt FROM registrations WHERE event_id = ?";
+        try (PreparedStatement ps = c.prepareStatement(q)) {
+            ps.setInt(1, eventId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt("cnt");
+            }
+        }
+    }
+
+    private int getCapacityForEvent(Connection c, int eventId) throws Exception {
+        String q = "SELECT capacity FROM events WHERE id = ?";
+        try (PreparedStatement ps = c.prepareStatement(q)) {
+            ps.setInt(1, eventId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getInt("capacity");
+                return 0;
+            }
+        }
+    }
+}
+
+
+---
+
+## File: src/main/java/com/example/servlet/EventServlet.java
+java
+package com.example.servlet;
+
+import com.example.dao.EventDAO;
+import com.example.model.Event;
+
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+
+import java.io.IOException;
+import java.util.List;
+
+@WebServlet(urlPatterns = {"/" , "/events"})
+public class EventServlet extends HttpServlet {
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        try {
+            EventDAO dao = new EventDAO();
+            List<Event> events = dao.listAll();
+            req.setAttribute("events", events);
+            req.getRequestDispatcher("/index.jsp").forward(req, resp);
+        } catch (Exception e) {
+            throw new ServletException(e);
+        }
+    }
+}
+
+
+---
+
+## File: src/main/java/com/example/servlet/RegistrationServlet.java
+java
+package com.example.servlet;
+
+import com.example.dao.EventDAO;
+import com.example.dao.RegistrationDAO;
+import com.example.model.Event;
+
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+
+import java.io.IOException;
+
+@WebServlet(urlPatterns = {"/register"})
+public class RegistrationServlet extends HttpServlet {
+
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        String idStr = req.getParameter("eventId");
+        try {
+            int eventId = Integer.parseInt(idStr);
+            EventDAO dao = new EventDAO();
+            Event e = dao.findById(eventId);
+            if (e == null) {
+                resp.sendError(HttpServletResponse.SC_NOT_FOUND);
+                return;
+            }
+            req.setAttribute("event", e);
+            req.getRequestDispatcher("/register.jsp").forward(req, resp);
+        } catch (Exception ex) {
+            throw new ServletException(ex);
+        }
+    }
+
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        try {
+            int eventId = Integer.parseInt(req.getParameter("eventId"));
+            String name = req.getParameter("name");
+            String email = req.getParameter("email");
+            String phone = req.getParameter("phone");
+
+            RegistrationDAO dao = new RegistrationDAO();
+            String result = dao.register(eventId, name, email, phone);
+
+            if ("OK".equals(result)) {
+                req.setAttribute("msg", "Registration successful");
+                req.getRequestDispatcher("/success.jsp").forward(req, resp);
+            } else if ("DUPLICATE".equals(result)) {
+                req.setAttribute("msg", "You have already registered for this event.");
+                req.getRequestDispatcher("/register.jsp").forward(req, resp);
+            } else if ("FULL".equals(result)) {
+                req.setAttribute("msg", "Sorry, the event is full.");
+                req.getRequestDispatcher("/register.jsp").forward(req, resp);
+            } else {
+                req.setAttribute("msg", "Registration failed. Try again later.");
+                req.getRequestDispatcher("/register.jsp").forward(req, resp);
+            }
+        } catch (Exception e) {
+            throw new ServletException(e);
+        }
+    }
+}
+
+
+---
+
+## File: src/main/webapp/index.jsp
+jsp
+<%@ page contentType="text/html;charset=UTF-8" language="java" %>
+<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core" %>
+<html>
+<head>
+    <title>Events</title>
+</head>
+<body>
+<h1>Upcoming Events</h1>
+<table border="1" cellpadding="6">
+    <tr><th>Name</th><th>Date</th><th>Venue</th><th>Capacity</th><th>Action</th></tr>
+    <c:forEach items="${events}" var="e">
+        <tr>
+            <td>${e.name}</td>
+            <td>${e.eventDate}</td>
+            <td>${e.venue}</td>
+            <td>${e.capacity}</td>
+            <td><a href="register?eventId=${e.id}">Register</a></td>
+        </tr>
+    </c:forEach>
+</table>
+</body>
+</html>
+
+
+---
+
+## File: src/main/webapp/register.jsp
+jsp
+<%@ page contentType="text/html;charset=UTF-8" language="java" %>
+<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core" %>
+<html>
+<head>
+    <title>Register</title>
+</head>
+<body>
+<h1>Register for: ${event.name}</h1>
+<c:if test="${not empty msg}">
+    <p style="color:red">${msg}</p>
+</c:if>
+<form method="post" action="register">
+    <input type="hidden" name="eventId" value="${event.id}" />
+    <label>Name: <input type="text" name="name" required/></label><br/><br/>
+    <label>Email: <input type="email" name="email" required/></label><br/><br/>
+    <label>Phone: <input type="text" name="phone"/></label><br/><br/>
+    <button type="submit">Submit</button>
+</form>
+</body>
+</html>
+
+
+---
+
+## File: src/main/webapp/success.jsp
+jsp
+<%@ page contentType="text/html;charset=UTF-8" language="java" %>
+<html>
+<head>
+    <title>Success</title>
+</head>
+<body>
+    <h1>Registration Successful</h1>
+    <p>Thank you for registering. You will receive a confirmation email soon.</p>
+    <a href="events">Back to events</a>
+</body>
+</html>
+
+
+---
+
+## File: src/main/webapp/WEB-INF/web.xml
+xml
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_5_0.xsd"
+         version="5.0">
+
+    <display-name>Event Registration</display-name>
+
+    <welcome-file-list>
+        <welcome-file>events</welcome-file>
+    </welcome-file-list>
+
+</web-app>
+
+
+---
+
+## README / Run steps (line-by-line)
+
+1. Install MySQL and create user/password.
+2. Update src/main/resources/db.properties with your DB credentials.
+3. Run the SQL in sql/schema.sql to create db and seed events.
+4. Build the project: mvn clean package
+5. Deploy the generated WAR (target/event-registration-1.0-SNAPSHOT.war) to a Servlet container (Tomcat 10+ or any Jakarta EE 9+ container).
+6. Access the app at http://localhost:8080/event-registration/ (or /event-registration/events)
+
+
+---
+
+If you'd like, I can:
+- export this as a downloadable ZIP
+- add email confirmation (SMTP) code
+- add admin authentication and an admin UI
+- convert the DAO to use a connection pool (HikariCP)
+
+Tell me which next step you prefer.
+By
